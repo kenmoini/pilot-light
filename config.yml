@@ -1,0 +1,38 @@
+pilot_light:
+  version: 0.0.1
+
+  dns_server: 8.8.8.8:53
+
+  server:
+    host: 0.0.0.0
+    port: 8082
+    timeout:
+      server: 30
+      read: 15
+      write: 10
+      idle: 5
+
+  database:
+    type: local
+    path: db.sqlite
+
+  ignition_sets:
+    - name: bootstrap
+      type: bootstrap
+      hostname_format: "*bootstrap*"
+      ignition_template: templates/bootstrap.tpl.ign
+
+    - name: control plane
+      type: master
+      hostname_format: "*master*"
+      ignition_template: templates/master.tpl.ign
+
+    - name: infrastructure
+      type: infra
+      hostname_format: "*infra*"
+      ignition_template: templates/infra.tpl.ign
+
+    - name: application
+      type: worker
+      hostname_format: "*worker*"
+      ignition_template: templates/application.tpl.ign
