@@ -39,6 +39,8 @@ type Server struct {
 	// Host is the local machine IP Address to bind the HTTP Server to
 	Host string `yaml:"host"`
 
+	Path string `yaml:"path"`
+
 	// Port is the local machine TCP Port to bind the HTTP Server to
 	Port    string `yaml:"port"`
 	Timeout struct {
@@ -99,7 +101,6 @@ type SchedulerConfig struct {
 	Status struct{} `yaml:"status"`
 }
 
-///////////////////////////////////////////////////////////////////////////////////////
 // NewConfig returns a new decoded Config struct
 func NewConfig(configPath string) (*Config, error) {
 	// Create config structure
@@ -161,7 +162,10 @@ func ParseFlags() (string, error) {
 }
 
 // NewRouter generates the router used in the HTTP Server
-func NewRouter() *http.ServeMux {
+func NewRouter(generationPath string) *http.ServeMux {
+	if generationPath == "" {
+		generationPath = "/generate"
+	}
 	// Create router and define routes and return that router
 	router := http.NewServeMux()
 
@@ -173,7 +177,7 @@ func NewRouter() *http.ServeMux {
 		fmt.Fprintf(w, "OK")
 	})
 
-	router.HandleFunc("/generate", func(w http.ResponseWriter, r *http.Request) {
+	router.HandleFunc(generationPath, func(w http.ResponseWriter, r *http.Request) {
 		address, err := NslookupIP("1.1.1.1")
 		if err != nil {
 			fmt.Fprintf(w, "Error in DNS resolution!\n\n%s", err)
@@ -202,7 +206,7 @@ func (config Config) Run() {
 	// Define server options
 	server := &http.Server{
 		Addr:         config.PilotLight.Server.Host + ":" + config.PilotLight.Server.Port,
-		Handler:      NewRouter(),
+		Handler:      NewRouter(config.PilotLight.Server.Path),
 		ReadTimeout:  config.PilotLight.Server.Timeout.Read * time.Second,
 		WriteTimeout: config.PilotLight.Server.Timeout.Write * time.Second,
 		IdleTimeout:  config.PilotLight.Server.Timeout.Idle * time.Second,
@@ -276,26 +280,38 @@ func NslookupIP(ip string) (address []string, reterr error) {
 	return
 }
 
-func OpenYAMLFile() {
-	viper.SetConfigName("config")
-	viper.SetConfigType("yml")
+// OpenSchedulerYAMLFile opens a YAML file
+func OpenSchedulerYAMLFile(fileName string, fileExt string, filePath string) (SchC SchedulerConfig) {
+	if fileName == "" {
+		fileName = "config"
+	}
+	if fileExt == "" {
+		fileExt = "yml"
+	}
+	if filePath == "" {
+		filePath = "."
+	}
+	viper.SetConfigName(fileName)
+	viper.SetConfigType(fileExt)
 	viper.AddConfigPath("/etc/pilot-light/")
 	viper.AddConfigPath("$HOME/.pilot-light/")
-	viper.AddConfigPath(".")
+	viper.AddConfigPath(filePath)
 
 	err := viper.ReadInConfig() // Find and read the config file
 	if err != nil {             // Handle errors reading the config file
 		log.Fatal(err)
 	}
 
-	C := repo{}
+	SchC = SchedulerConfig{}
 
-	err = viper.Unmarshal(&C)
+	err = viper.Unmarshal(&SchC)
 	if err != nil {
 		log.Fatalf("unable to decode into struct, %v", err)
 	}
 
-	return C
+	fmt.Println(SchC)
+
+	return SchC
 
 }
 

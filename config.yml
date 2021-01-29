@@ -5,6 +5,7 @@ pilot_light:
 
   server:
     host: 0.0.0.0
+    path: "/generate-manifest"
     port: 8082
     timeout:
       server: 30
