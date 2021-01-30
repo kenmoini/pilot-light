@@ -76,6 +76,53 @@ type IgnitionSet struct {
 	IgnitionTemplate string `yaml:"ignition_template"`
 }
 
+// InstallConfig defines the attached InstallConfig from the general configuration of openshift-install or whatever i dunno i'm drunk
+type InstallConfig struct {
+	APIVersion string `yaml:""`
+	BaseDomain string `yaml:""`
+	Compute    struct {
+	} `yaml:""`
+	ControlPlane struct {
+	} `yaml:""`
+	MetaData struct {
+	} `yaml:""`
+	Networking struct {
+	} `yaml:""`
+	Platform struct {
+		APIVersion string `yaml:""`
+	} `yaml:""`
+	FIPSMode   bool   `yaml:""`
+	pullSecret string `yaml:""`
+	SSHKey     string `yaml:""`
+}
+
+/*
+apiVersion: v1
+baseDomain: example.com
+compute:
+- hyperthreading: Enabled
+  name: worker
+  replicas: 0
+controlPlane:
+  hyperthreading: Enabled
+  name: master
+  replicas: 3
+metadata:
+  name: test
+networking:
+  clusterNetwork:
+  - cidr: 10.128.0.0/14
+    hostPrefix: 23
+  networkType: OpenShiftSDN
+  serviceNetwork:
+  - 172.30.0.0/16
+platform:
+  none: {}
+fips: false
+pullSecret: '{"auths": ...}'
+sshKey: 'ssh-ed25519 AAAA...'
+*/
+
 // errorString is a trivial implementation of error.
 type errorString struct {
 	s string
