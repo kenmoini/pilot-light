@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -27,11 +28,12 @@ type Config struct {
 
 // PilotLightYaml is what is defined for this Pilot Light server
 type PilotLightYaml struct {
-	Version      string        `yaml:"version"`
-	DNSServer    string        `yaml:"dns_server"`
-	Server       Server        `yaml:"server"`
-	Database     Database      `yaml:"database"`
-	IgnitionSets []IgnitionSet `yaml:"ignition_sets"`
+	Version       string        `yaml:"version"`
+	DNSServer     string        `yaml:"dns_server"`
+	Server        Server        `yaml:"server"`
+	Database      Database      `yaml:"database"`
+	IgnitionSets  []IgnitionSet `yaml:"ignition_sets"`
+	InstallConfig InstallConfig `yaml:"install_config,omitempty"`
 }
 
 // Server configures the HTTP server providing Ignition files
@@ -73,55 +75,47 @@ type IgnitionSet struct {
 	Name             string `yaml:"name"`
 	Type             string `yaml:"type"`
 	HostnameFormat   string `yaml:"hostname_format"`
-	IgnitionTemplate string `yaml:"ignition_template"`
+	IgnitionTemplate string `yaml:"ignition_template,omitempty"`
 }
 
 // InstallConfig defines the attached InstallConfig from the general configuration of openshift-install or whatever i dunno i'm drunk
 type InstallConfig struct {
-	APIVersion string `yaml:""`
-	BaseDomain string `yaml:""`
-	Compute    struct {
-	} `yaml:""`
+	APIVersion   string            `yaml:"apiVersion"`
+	BaseDomain   string            `yaml:"baseDomain"`
+	Compute      []ComputeResource `yaml:"compute"`
 	ControlPlane struct {
-	} `yaml:""`
+		HyperThreading string `yaml:"hyperthreading"`
+		Name           string `yaml:"name"`
+		replicas       int    `yaml:"replicas"`
+	} `yaml:"controlPlane"`
 	MetaData struct {
-	} `yaml:""`
+		Name string `yaml:"name"`
+	} `yaml:"metadata"`
 	Networking struct {
-	} `yaml:""`
+		NetworkType     string           `yaml:"networkType"`
+		ClusterNetworks []ClusterNetwork `yaml:"clusterNetwork"`
+		ServiceNetworks []string         `yaml:"serviceNetwork"`
+	} `yaml:"networking"`
 	Platform struct {
-		APIVersion string `yaml:""`
-	} `yaml:""`
-	FIPSMode   bool   `yaml:""`
-	pullSecret string `yaml:""`
-	SSHKey     string `yaml:""`
+		None struct{} `yaml:"none"`
+	} `yaml:"platform"`
+	FIPSMode   bool   `yaml:"fips"`
+	pullSecret string `yaml:"pullSecret"`
+	SSHKey     string `yaml:"sshKey"`
 }
 
-/*
-apiVersion: v1
-baseDomain: example.com
-compute:
-- hyperthreading: Enabled
-  name: worker
-  replicas: 0
-controlPlane:
-  hyperthreading: Enabled
-  name: master
-  replicas: 3
-metadata:
-  name: test
-networking:
-  clusterNetwork:
-  - cidr: 10.128.0.0/14
-    hostPrefix: 23
-  networkType: OpenShiftSDN
-  serviceNetwork:
-  - 172.30.0.0/16
-platform:
-  none: {}
-fips: false
-pullSecret: '{"auths": ...}'
-sshKey: 'ssh-ed25519 AAAA...'
-*/
+// ComputeResource is for all the compute resources you can't define lol
+type ComputeResource struct {
+	HyperThreading string `yaml:"hyperthreading"`
+	Name           string `yaml:"name"`
+	replicas       int    `yaml:"replicas"`
+}
+
+// ClusterNetwork technically is a mapped list...or whatever
+type ClusterNetwork struct {
+	CIDR       string `yaml:"cidr"`
+	HostPrefix int    `yaml:"hostPrefix"`
+}
 
 // errorString is a trivial implementation of error.
 type errorString struct {
@@ -132,6 +126,7 @@ func (e *errorString) Error() string {
 	return e.s
 }
 
+// SchedulerConfig is meant to map to the /manifests/cluster-scheduler-02-config.yml file so you can set the Control Plnae nodes to not run workloads (taint em good)
 type SchedulerConfig struct {
 	apiVersion string `yaml:"apiVersion"`
 	King       string `yaml:"kind"`
@@ -225,12 +220,13 @@ func NewRouter(generationPath string) *http.ServeMux {
 	})
 
 	router.HandleFunc(generationPath, func(w http.ResponseWriter, r *http.Request) {
-		address, err := NslookupIP("1.1.1.1")
+		clientIPAddress := ReadUserIPNoPort(r)
+		address, err := NslookupIP(clientIPAddress)
 		if err != nil {
 			fmt.Fprintf(w, "Error in DNS resolution!\n\n%s", err)
 		}
 		if err == nil {
-			fmt.Fprintf(w, "Address: %s", address)
+			fmt.Fprintf(w, "Address %s Resolved To Hostname: %s", clientIPAddress, address[0])
 		}
 	})
 
@@ -259,6 +255,12 @@ func (config Config) Run() {
 		IdleTimeout:  config.PilotLight.Server.Timeout.Idle * time.Second,
 	}
 
+	// Only listen on IPV4
+	l, err := net.Listen("tcp4", config.PilotLight.Server.Host+":"+config.PilotLight.Server.Port)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	// Handle ctrl+c/ctrl+x interrupt
 	signal.Notify(runChan, os.Interrupt, syscall.SIGTSTP)
 
@@ -267,7 +269,8 @@ func (config Config) Run() {
 
 	// Run the server on a new goroutine
 	go func() {
-		if err := server.ListenAndServe(); err != nil {
+		//if err := server.ListenAndServe(); err != nil {
+		if err := server.Serve(l); err != nil {
 			if err == http.ErrServerClosed {
 				// Normal interrupt operation, ignore
 			} else {
@@ -325,6 +328,35 @@ func NslookupIP(ip string) (address []string, reterr error) {
 	reterr = nil
 	cancel()
 	return
+}
+
+// ReadUserIP gets the requesting client's IP so you can do a reverse DNS lookup
+func ReadUserIP(r *http.Request) string {
+	IPAddress := r.Header.Get("X-Real-Ip")
+	if IPAddress == "" {
+		IPAddress = r.Header.Get("X-Forwarded-For")
+	}
+	if IPAddress == "" {
+		IPAddress = r.RemoteAddr
+	}
+	return IPAddress
+}
+
+// ReadUserIPNoPort gets the requesting client's IP without the port so you can do a reverse DNS lookup
+func ReadUserIPNoPort(r *http.Request) string {
+	IPAddress := r.Header.Get("X-Real-Ip")
+	if IPAddress == "" {
+		IPAddress = r.Header.Get("X-Forwarded-For")
+	}
+	if IPAddress == "" {
+		IPAddress = r.RemoteAddr
+	}
+	NoPort := strings.Split(IPAddress, ":")
+	if len(NoPort) > 0 {
+		NoPort = NoPort[:len(NoPort)-1]
+	}
+	JoinedAddress := strings.Join(NoPort[:], ":")
+	return JoinedAddress
 }
 
 // OpenSchedulerYAMLFile opens a YAML file

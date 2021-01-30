@@ -1,0 +1,63 @@
+pilot_light:
+  version: 0.0.1
+
+  dns_server: 8.8.8.8:53
+
+  server:
+    host: 0.0.0.0
+    path: "/generate-manifest"
+    port: 8082
+    timeout:
+      server: 30
+      read: 15
+      write: 10
+      idle: 5
+
+  database:
+    type: local
+    path: db.sqlite
+
+  ignition_sets:
+    - name: bootstrap
+      type: bootstrap
+      hostname_format: "*bootstrap*"
+
+    - name: control plane
+      type: master
+      hostname_format: "*master*"
+
+    - name: infrastructure
+      type: infra
+      hostname_format: "*infra*"
+
+    - name: application
+      type: worker
+      hostname_format: "*worker*"
+      #ignition_template: templates/application.tpl.ign
+      #ignition_template allows you to set up custom Ignition templates for specific resources.  Vars include: {{ hostname }} and {{ ip }}
+
+  install_config:
+    apiVersion: v1
+    baseDomain: example.com
+    compute:
+    - hyperthreading: Enabled
+      name: worker
+      replicas: 0
+    controlPlane:
+      hyperthreading: Enabled
+      name: master
+      replicas: 3
+    metadata:
+      name: test
+    networking:
+      clusterNetwork:
+      - cidr: 10.128.0.0/14
+        hostPrefix: 23
+      networkType: OpenShiftSDN
+      serviceNetwork:
+      - 172.30.0.0/16
+    platform:
+      none: {}
+    fips: false
+    pullSecret: '{"auths": ...}'
+    sshKey: 'ssh-ed25519 AAAA...'
