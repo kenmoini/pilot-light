@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -36,14 +38,16 @@ type Config struct {
 
 // PilotLightYaml is what is defined for this Pilot Light server
 type PilotLightYaml struct {
-	Version           string        `yaml:"version"`
-	AssetDirectory    string        `yaml:"asset_directory"`
-	DNSServer         string        `yaml:"dns_server"`
-	InstallConfigPath string        `yaml:"install_config_path"`
-	Server            Server        `yaml:"server"`
-	Database          Database      `yaml:"database"`
-	IgnitionSets      []IgnitionSet `yaml:"ignition_sets"`
-	InstallConfig     InstallConfig `yaml:"install_config,omitempty"`
+	Version             string        `yaml:"version"`
+	AssetDirectory      string        `yaml:"asset_directory"`
+	DNSServer           string        `yaml:"dns_server"`
+	InstallConfigPath   string        `yaml:"install_config_path"`
+	MastersSchedulable  bool          `yaml:"masters_schedulable"`
+	DefaultIgnitionFile string        `yaml:"default_ignition_file"`
+	Server              Server        `yaml:"server"`
+	Database            Database      `yaml:"database"`
+	IgnitionSets        []IgnitionSet `yaml:"ignition_sets"`
+	InstallConfig       InstallConfig `yaml:"install_config,omitempty"`
 }
 
 // Server configures the HTTP server providing Ignition files
@@ -232,6 +236,7 @@ func DownloadFile(filepath string, url string) error {
 // Untar takes a destination path and a reader; a tar reader loops over the tarfile
 // creating the file structure at 'dst' along the way, and writing any files
 func Untar(dst string, srcFile string) error {
+	log.Printf("Extracting %s to %s\n", srcFile, dst)
 	r, err := os.Open(srcFile)
 	if err != nil {
 		fmt.Println(err)
@@ -299,67 +304,6 @@ func Untar(dst string, srcFile string) error {
 			// to wait until all operations have completed.
 			f.Close()
 		}
-	}
-}
-
-// processTarGzFile extracts a zip of sorts
-func processTarGzFile(srcFile string, path string, num int) {
-	f, err := os.Open(srcFile)
-	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
-	}
-	defer f.Close()
-
-	gzf, err := gzip.NewReader(f)
-	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
-	}
-
-	tarReader := tar.NewReader(gzf)
-
-	i := 0
-	for {
-		header, err := tarReader.Next()
-
-		if err == io.EOF {
-			break
-		}
-
-		if err != nil {
-			fmt.Println(err)
-			os.Exit(1)
-		}
-
-		name := header.Name
-
-		switch header.Typeflag {
-		case tar.TypeDir:
-			continue
-		case tar.TypeReg:
-			fmt.Println("(", i, ")", "Name: ", name)
-			if i == num {
-				out, err := os.Create(path + name)
-				check(err)
-				//defer out.Close()
-
-				fmt.Println(" --- ")
-				io.Copy(out, tarReader)
-				fmt.Println(" --- ")
-
-				out.Close()
-			}
-		default:
-			fmt.Printf("%s : %c %s %s\n",
-				"Yikes! Unable to figure out type",
-				header.Typeflag,
-				"in file",
-				name,
-			)
-		}
-
-		i++
 	}
 }
 
@@ -443,10 +387,32 @@ func NewRouter(generationPath string) *http.ServeMux {
 		clientIPAddress := ReadUserIPNoPort(r)
 		address, err := NslookupIP(clientIPAddress)
 		if err != nil {
-			fmt.Fprintf(w, "Error in DNS resolution!\n\n%s", err)
+			log.Printf("Error in DNS resolution!\n\n%s", err)
 		}
 		if err == nil {
-			fmt.Fprintf(w, "Address %s Resolved To Hostname: %s", clientIPAddress, address[0])
+			log.Printf("Address %s Resolved To Hostname: %s", clientIPAddress, address[0])
+		}
+
+		// Loop through ignition sets to do matching
+		matchedHostname := false
+		for k, v := range readConfig.PilotLight.IgnitionSets {
+			if strings.Contains(address[0], v.HostnameFormat) {
+				matchedHostname = true
+				log.Printf("Matched hostname %s to IgnitionSet #%d %s", address[0], k, v.Name)
+				dat, err := ioutil.ReadFile(readConfig.PilotLight.AssetDirectory + "/conf/" + v.Type + ".ign")
+				check(err)
+				fmt.Fprintf(w, string(dat))
+			}
+		}
+		if !matchedHostname {
+			if readConfig.PilotLight.DefaultIgnitionFile != "none" {
+				log.Printf("No match for hostname %s to any IgnitionSets, serving %s.ign", address[0], readConfig.PilotLight.DefaultIgnitionFile)
+				dat, err := ioutil.ReadFile(readConfig.PilotLight.AssetDirectory + "/conf/" + readConfig.PilotLight.DefaultIgnitionFile + ".ign")
+				check(err)
+				fmt.Fprintf(w, string(dat))
+			} else {
+				log.Printf("No match for hostname %s to any IgnitionSets", address[0])
+			}
 		}
 	})
 
@@ -464,8 +430,6 @@ func CustomDNSDialer(ctx context.Context, network, address string) (net.Conn, er
 
 // NslookupIP resolves an IP to a hostname via reverse DNS
 func NslookupIP(ip string) (address []string, reterr error) {
-	//ctx := context.Background()
-	//ctx, cancel := context.WithTimeout(context.Background(), readConfig.PilotLight.Server.Timeout.Server)
 	ctx, cancel := context.WithCancel(context.Background())
 	r := net.Resolver{
 		PreferGo: true,
@@ -531,60 +495,85 @@ func createDirectory(path string) {
 	}
 }
 
-// WriteInstallConfigFile is to write the install-config.yaml file for openshift-install
-func WriteInstallConfigFile(config Config) {
+// deleteFile deletes a file
+func deleteFile(path string) {
+	log.Printf("Deleting %s\n", path)
+	e := os.Remove(path)
+	check(e)
+}
+
+// PreflightSetup is to write the install-config.yaml file for openshift-install
+func PreflightSetup(config Config) {
 	// Remove generation directory if it exists
 	log.Printf("Cleaning up asset directory %s\n", config.PilotLight.AssetDirectory)
 	err := os.RemoveAll(config.PilotLight.AssetDirectory)
+	check(err)
+
+	absoluteBinPath, err := filepath.Abs(config.PilotLight.AssetDirectory + "bin/")
+	check(err)
+	absoluteConfPath, err := filepath.Abs(config.PilotLight.AssetDirectory + "conf/")
 	check(err)
 
 	// Create generation directory
 	createDirectory(config.PilotLight.AssetDirectory)
 
 	// Create bin directory
-	createDirectory(config.PilotLight.AssetDirectory + "/bin/")
+	createDirectory(absoluteBinPath)
 
 	// Create conf directory
-	createDirectory(config.PilotLight.AssetDirectory + "/conf/")
+	createDirectory(absoluteConfPath)
 
 	// Copy over the install-config.yml file
-	copy(config.PilotLight.InstallConfigPath, config.PilotLight.AssetDirectory+"/conf/install-config.yaml", BUFFERSIZE)
+	copy(config.PilotLight.InstallConfigPath, absoluteConfPath+"/install-config.yaml", BUFFERSIZE)
+
+	os := "linux"
+	if runtime.GOOS == "darwin" {
+		os = "mac"
+	}
 
 	// Download the openshift-install package
-	err = DownloadFile(config.PilotLight.AssetDirectory+"/bin/openshift-install-linux.tar.gz", "https://mirror.openshift.com/pub/openshift-v4/clients/ocp/latest/openshift-install-linux.tar.gz")
+	err = DownloadFile(absoluteBinPath+"/openshift-install-"+os+".tar.gz", "https://mirror.openshift.com/pub/openshift-v4/clients/ocp/latest/openshift-install-"+os+".tar.gz")
 	check(err)
 
 	// Unzip the openshift-install package
-	Untar(config.PilotLight.AssetDirectory+"/bin/", config.PilotLight.AssetDirectory+"/bin/openshift-install-linux.tar.gz")
-	//processTarGzFile(config.PilotLight.AssetDirectory+"/bin/openshift-install-linux.tar.gz", config.PilotLight.AssetDirectory+"/bin/", 4)
+	Untar(absoluteBinPath, absoluteBinPath+"/openshift-install-"+os+".tar.gz")
 
-	// Run Manifest creation command
-	cmd := exec.Command(config.PilotLight.AssetDirectory+"/bin/openshift-install", "create", "manifest", "--dir", config.PilotLight.AssetDirectory+"/conf/")
+	// Remove unneeded files
+	deleteFile(absoluteBinPath + "/openshift-install-" + os + ".tar.gz")
+	deleteFile(absoluteBinPath + "/README.md")
 
-	err = cmd.Run()
+	// Create bootstrap files
+	log.Println("Creating bootstrap files...")
+	d1 := []byte("#!/bin/sh\n" + absoluteBinPath + "/openshift-install create manifests --dir=" + absoluteConfPath)
+	err = ioutil.WriteFile(absoluteBinPath+"/create_manifests.sh", d1, 0755)
+	check(err)
+	d2 := []byte("#!/bin/sh\n" + absoluteBinPath + "/openshift-install create ignition-configs --dir=" + absoluteConfPath)
+	err = ioutil.WriteFile(absoluteBinPath+"/create_ignition_configs.sh", d2, 0755)
 	check(err)
 
+	// Run Manifest creation command
+	log.Println("Creating manifests...")
+	cmd := exec.Command(absoluteBinPath + "/create_manifests.sh")
+	err = cmd.Start()
+	check(err)
+
+	// wait for command to finish
+	cmd.Wait()
+	log.Println("Manifest files created!")
+
 	// Edit manifest file to disable scheduling workloads on Control Plane nodes
-	// Run Ignition creation command
+	if config.PilotLight.MastersSchedulable == false {
+		log.Println("Setting Control Plane to not run workloads...")
+		ModifySchedulerYAMLFile("cluster-scheduler-02-config", "yml", absoluteConfPath+"/manifests/")
+	}
 
-	/*
-		// Old code that created YAML file from the shared conf, didn't work for sshKey and pullSecret
-		ic := config.PilotLight.InstallConfig
+	// Create ignition files
+	log.Println("Creating ignition configs...")
+	cmd = exec.Command(absoluteBinPath + "/create_ignition_configs.sh")
+	err = cmd.Start()
+	check(err)
 
-		fmt.Println(ic)
-
-		d, err := yaml.Marshal(&ic)
-		check(err)
-		fmt.Printf("--- ic dump:\n%s\n\n", string(d))
-
-		f, err := os.Create(config.PilotLight.AssetDirectory + "/install-config.yaml")
-		check(err)
-		defer f.Close()
-
-		n2, err := f.Write(d)
-		check(err)
-		fmt.Printf("wrote %d bytes\n", n2)
-	*/
+	log.Println("Preflight complete!")
 }
 
 // check does error checking
@@ -594,8 +583,8 @@ func check(e error) {
 	}
 }
 
-// OpenSchedulerYAMLFile opens a YAML file
-func OpenSchedulerYAMLFile(fileName string, fileExt string, filePath string) (SchC SchedulerConfig) {
+// ModifySchedulerYAMLFile opens a YAML file
+func ModifySchedulerYAMLFile(fileName string, fileExt string, filePath string) {
 	if fileName == "" {
 		fileName = "config"
 	}
@@ -607,8 +596,6 @@ func OpenSchedulerYAMLFile(fileName string, fileExt string, filePath string) (Sc
 	}
 	viper.SetConfigName(fileName)
 	viper.SetConfigType(fileExt)
-	viper.AddConfigPath("/etc/pilot-light/")
-	viper.AddConfigPath("$HOME/.pilot-light/")
 	viper.AddConfigPath(filePath)
 
 	err := viper.ReadInConfig() // Find and read the config file
@@ -616,16 +603,22 @@ func OpenSchedulerYAMLFile(fileName string, fileExt string, filePath string) (Sc
 		log.Fatal(err)
 	}
 
-	SchC = SchedulerConfig{}
+	SchC := SchedulerConfig{}
 
 	err = viper.Unmarshal(&SchC)
 	if err != nil {
 		log.Fatalf("unable to decode into struct, %v", err)
 	}
 
-	fmt.Println(SchC)
+	// Change value in map and marshal back into yaml
+	viper.Set("spec.mastersSchedulable", false)
 
-	return SchC
+	_, err = yaml.Marshal(&SchC)
+	if err != nil {
+		log.Fatalf("error: %v", err)
+	}
+
+	viper.WriteConfig()
 
 }
 
@@ -643,7 +636,7 @@ func (config Config) Run() {
 	defer cancel()
 
 	// Create install-config.yaml file
-	WriteInstallConfigFile(config)
+	PreflightSetup(config)
 
 	// Define server options
 	server := &http.Server{

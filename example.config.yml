@@ -4,6 +4,8 @@ pilot_light:
   asset_directory: ./.generated/
   dns_server: 8.8.8.8:53
   install_config_path: ./install-config.yaml
+  masters_schedulable: false
+  default_ignition_file: bootstrap
 
   server:
     host: 0.0.0.0
@@ -22,18 +24,18 @@ pilot_light:
   ignition_sets:
     - name: bootstrap
       type: bootstrap
-      hostname_format: "*bootstrap*"
+      hostname_format: bootstrap
 
     - name: control plane
       type: master
-      hostname_format: "*master*"
+      hostname_format: master
 
     - name: infrastructure
       type: infra
-      hostname_format: "*infra*"
+      hostname_format: infra
 
     - name: application
       type: worker
-      hostname_format: "*worker*"
+      hostname_format: worker
       #ignition_template: templates/application.tpl.ign
       #ignition_template allows you to set up custom Ignition templates for specific resources.  Vars include: {{ hostname }} and {{ ip }}
