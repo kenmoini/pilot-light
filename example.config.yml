@@ -37,5 +37,3 @@ pilot_light:
     - name: application
       type: worker
       hostname_format: worker
-      #ignition_template: templates/application.tpl.ign
-      #ignition_template allows you to set up custom Ignition templates for specific resources.  Vars include: {{ hostname }} and {{ ip }}
