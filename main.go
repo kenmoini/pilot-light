@@ -509,9 +509,9 @@ func PreflightSetup(config Config) {
 	err := os.RemoveAll(config.PilotLight.AssetDirectory)
 	check(err)
 
-	absoluteBinPath, err := filepath.Abs(config.PilotLight.AssetDirectory + "bin/")
+	absoluteBinPath, err := filepath.Abs(config.PilotLight.AssetDirectory + "/bin/")
 	check(err)
-	absoluteConfPath, err := filepath.Abs(config.PilotLight.AssetDirectory + "conf/")
+	absoluteConfPath, err := filepath.Abs(config.PilotLight.AssetDirectory + "/conf/")
 	check(err)
 
 	// Create generation directory
