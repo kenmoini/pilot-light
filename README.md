@@ -6,7 +6,7 @@ Imagine you want to install OpenShift with the Bare Metal UPI Installation metho
 - Set DHCP/PXE boot parameters
 - Boot from ISO
 
-...but you CAN:
+...but you ***CAN***:
 
 - Map and set Static IPs
 - Manage forward and reverse DNS for your Machines
