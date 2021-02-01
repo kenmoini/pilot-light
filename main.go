@@ -1,15 +1,20 @@
 package main
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -21,6 +26,9 @@ import (
 var plVersion string = "0.0.1"
 var readConfig *Config
 
+// BUFFERSIZE is for copying files
+var BUFFERSIZE int64 = 4096
+
 // Config struct for webapp config
 type Config struct {
 	PilotLight PilotLightYaml `yaml:"pilot_light"`
@@ -28,12 +36,14 @@ type Config struct {
 
 // PilotLightYaml is what is defined for this Pilot Light server
 type PilotLightYaml struct {
-	Version       string        `yaml:"version"`
-	DNSServer     string        `yaml:"dns_server"`
-	Server        Server        `yaml:"server"`
-	Database      Database      `yaml:"database"`
-	IgnitionSets  []IgnitionSet `yaml:"ignition_sets"`
-	InstallConfig InstallConfig `yaml:"install_config,omitempty"`
+	Version           string        `yaml:"version"`
+	AssetDirectory    string        `yaml:"asset_directory"`
+	DNSServer         string        `yaml:"dns_server"`
+	InstallConfigPath string        `yaml:"install_config_path"`
+	Server            Server        `yaml:"server"`
+	Database          Database      `yaml:"database"`
+	IgnitionSets      []IgnitionSet `yaml:"ignition_sets"`
+	InstallConfig     InstallConfig `yaml:"install_config,omitempty"`
 }
 
 // Server configures the HTTP server providing Ignition files
@@ -78,7 +88,7 @@ type IgnitionSet struct {
 	IgnitionTemplate string `yaml:"ignition_template,omitempty"`
 }
 
-// InstallConfig defines the attached InstallConfig from the general configuration of openshift-install or whatever i dunno i'm drunk
+// InstallConfig defines the attached InstallConfig from the general configuration of openshift-install or whatever i dunno i'm drunk - so evidently this doesn't work and doesnt properly do sshKey and pullSecret when writing to yaml file
 type InstallConfig struct {
 	APIVersion   string            `yaml:"apiVersion"`
 	BaseDomain   string            `yaml:"baseDomain"`
@@ -141,6 +151,216 @@ type SchedulerConfig struct {
 		} `yaml:"policy"`
 	} `yaml:"spec"`
 	Status struct{} `yaml:"status"`
+}
+
+// copy a file
+func copy(src, dst string, BUFFERSIZE int64) error {
+	log.Printf("Copying  %s to %s\n", src, dst)
+	if BUFFERSIZE == 0 {
+		BUFFERSIZE = 4096
+	}
+	sourceFileStat, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+
+	if !sourceFileStat.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", src)
+	}
+
+	source, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+
+	_, err = os.Stat(dst)
+	if err == nil {
+		return fmt.Errorf("File %s already exists", dst)
+	}
+
+	destination, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer destination.Close()
+
+	if err != nil {
+		panic(err)
+	}
+
+	buf := make([]byte, BUFFERSIZE)
+	for {
+		n, err := source.Read(buf)
+		if err != nil && err != io.EOF {
+			return err
+		}
+		if n == 0 {
+			break
+		}
+
+		if _, err := destination.Write(buf[:n]); err != nil {
+			return err
+		}
+	}
+	return err
+}
+
+// DownloadFile will download a url to a local file. It's efficient because it will
+// write as it downloads and not load the whole file into memory.
+func DownloadFile(filepath string, url string) error {
+	log.Printf("Downloading %s to %s\n", url, filepath)
+	// Get the data
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	// Create the file
+	out, err := os.Create(filepath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	// Write the body to file
+	_, err = io.Copy(out, resp.Body)
+	return err
+}
+
+// Untar takes a destination path and a reader; a tar reader loops over the tarfile
+// creating the file structure at 'dst' along the way, and writing any files
+func Untar(dst string, srcFile string) error {
+	r, err := os.Open(srcFile)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+	defer r.Close()
+
+	gzr, err := gzip.NewReader(r)
+	if err != nil {
+		return err
+	}
+	defer gzr.Close()
+
+	tr := tar.NewReader(gzr)
+
+	for {
+		header, err := tr.Next()
+
+		switch {
+
+		// if no more files are found return
+		case err == io.EOF:
+			return nil
+
+		// return any other error
+		case err != nil:
+			return err
+
+		// if the header is nil, just skip it (not sure how this happens)
+		case header == nil:
+			continue
+		}
+
+		// the target location where the dir/file should be created
+		target := filepath.Join(dst, header.Name)
+
+		// the following switch could also be done using fi.Mode(), not sure if there
+		// a benefit of using one vs. the other.
+		// fi := header.FileInfo()
+
+		// check the file type
+		switch header.Typeflag {
+
+		// if its a dir and it doesn't exist create it
+		case tar.TypeDir:
+			if _, err := os.Stat(target); err != nil {
+				if err := os.MkdirAll(target, 0755); err != nil {
+					return err
+				}
+			}
+
+		// if it's a file create it
+		case tar.TypeReg:
+			f, err := os.OpenFile(target, os.O_CREATE|os.O_RDWR, os.FileMode(header.Mode))
+			if err != nil {
+				return err
+			}
+
+			// copy over contents
+			if _, err := io.Copy(f, tr); err != nil {
+				return err
+			}
+
+			// manually close here after each file operation; defering would cause each file close
+			// to wait until all operations have completed.
+			f.Close()
+		}
+	}
+}
+
+// processTarGzFile extracts a zip of sorts
+func processTarGzFile(srcFile string, path string, num int) {
+	f, err := os.Open(srcFile)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+	defer f.Close()
+
+	gzf, err := gzip.NewReader(f)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+
+	tarReader := tar.NewReader(gzf)
+
+	i := 0
+	for {
+		header, err := tarReader.Next()
+
+		if err == io.EOF {
+			break
+		}
+
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+
+		name := header.Name
+
+		switch header.Typeflag {
+		case tar.TypeDir:
+			continue
+		case tar.TypeReg:
+			fmt.Println("(", i, ")", "Name: ", name)
+			if i == num {
+				out, err := os.Create(path + name)
+				check(err)
+				//defer out.Close()
+
+				fmt.Println(" --- ")
+				io.Copy(out, tarReader)
+				fmt.Println(" --- ")
+
+				out.Close()
+			}
+		default:
+			fmt.Printf("%s : %c %s %s\n",
+				"Yikes! Unable to figure out type",
+				header.Typeflag,
+				"in file",
+				name,
+			)
+		}
+
+		i++
+	}
 }
 
 // NewConfig returns a new decoded Config struct
@@ -233,64 +453,6 @@ func NewRouter(generationPath string) *http.ServeMux {
 	return router
 }
 
-// Run will run the HTTP Server
-func (config Config) Run() {
-	// Set up a channel to listen to for interrupt signals
-	var runChan = make(chan os.Signal, 1)
-
-	// Set up a context to allow for graceful server shutdowns in the event
-	// of an OS interrupt (defers the cancel just in case)
-	ctx, cancel := context.WithTimeout(
-		context.Background(),
-		config.PilotLight.Server.Timeout.Server,
-	)
-	defer cancel()
-
-	// Define server options
-	server := &http.Server{
-		Addr:         config.PilotLight.Server.Host + ":" + config.PilotLight.Server.Port,
-		Handler:      NewRouter(config.PilotLight.Server.Path),
-		ReadTimeout:  config.PilotLight.Server.Timeout.Read * time.Second,
-		WriteTimeout: config.PilotLight.Server.Timeout.Write * time.Second,
-		IdleTimeout:  config.PilotLight.Server.Timeout.Idle * time.Second,
-	}
-
-	// Only listen on IPV4
-	l, err := net.Listen("tcp4", config.PilotLight.Server.Host+":"+config.PilotLight.Server.Port)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// Handle ctrl+c/ctrl+x interrupt
-	signal.Notify(runChan, os.Interrupt, syscall.SIGTSTP)
-
-	// Alert the user that the server is starting
-	log.Printf("Server is starting on %s\n", server.Addr)
-
-	// Run the server on a new goroutine
-	go func() {
-		//if err := server.ListenAndServe(); err != nil {
-		if err := server.Serve(l); err != nil {
-			if err == http.ErrServerClosed {
-				// Normal interrupt operation, ignore
-			} else {
-				log.Fatalf("Server failed to start due to err: %v", err)
-			}
-		}
-	}()
-
-	// Block on this channel listeninf for those previously defined syscalls assign
-	// to variable so we can let the user know why the server is shutting down
-	interrupt := <-runChan
-
-	// If we get one of the pre-prescribed syscalls, gracefully terminate the server
-	// while alerting the user
-	log.Printf("Server is shutting down due to %+v\n", interrupt)
-	if err := server.Shutdown(ctx); err != nil {
-		log.Fatalf("Server was unable to gracefully shutdown due to err: %+v", err)
-	}
-}
-
 // CustomDNSDialer is able to switch the target resolving DNS server
 func CustomDNSDialer(ctx context.Context, network, address string) (net.Conn, error) {
 	d := net.Dialer{}
@@ -359,6 +521,79 @@ func ReadUserIPNoPort(r *http.Request) string {
 	return JoinedAddress
 }
 
+// createDirectory is self explanitory
+func createDirectory(path string) {
+	log.Printf("Creating directory %s\n", path)
+	_, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		errDir := os.MkdirAll(path, 0755)
+		check(errDir)
+	}
+}
+
+// WriteInstallConfigFile is to write the install-config.yaml file for openshift-install
+func WriteInstallConfigFile(config Config) {
+	// Remove generation directory if it exists
+	log.Printf("Cleaning up asset directory %s\n", config.PilotLight.AssetDirectory)
+	err := os.RemoveAll(config.PilotLight.AssetDirectory)
+	check(err)
+
+	// Create generation directory
+	createDirectory(config.PilotLight.AssetDirectory)
+
+	// Create bin directory
+	createDirectory(config.PilotLight.AssetDirectory + "/bin/")
+
+	// Create conf directory
+	createDirectory(config.PilotLight.AssetDirectory + "/conf/")
+
+	// Copy over the install-config.yml file
+	copy(config.PilotLight.InstallConfigPath, config.PilotLight.AssetDirectory+"/conf/install-config.yaml", BUFFERSIZE)
+
+	// Download the openshift-install package
+	err = DownloadFile(config.PilotLight.AssetDirectory+"/bin/openshift-install-linux.tar.gz", "https://mirror.openshift.com/pub/openshift-v4/clients/ocp/latest/openshift-install-linux.tar.gz")
+	check(err)
+
+	// Unzip the openshift-install package
+	Untar(config.PilotLight.AssetDirectory+"/bin/", config.PilotLight.AssetDirectory+"/bin/openshift-install-linux.tar.gz")
+	//processTarGzFile(config.PilotLight.AssetDirectory+"/bin/openshift-install-linux.tar.gz", config.PilotLight.AssetDirectory+"/bin/", 4)
+
+	// Run Manifest creation command
+	cmd := exec.Command(config.PilotLight.AssetDirectory+"/bin/openshift-install", "create", "manifest", "--dir", config.PilotLight.AssetDirectory+"/conf/")
+
+	err = cmd.Run()
+	check(err)
+
+	// Edit manifest file to disable scheduling workloads on Control Plane nodes
+	// Run Ignition creation command
+
+	/*
+		// Old code that created YAML file from the shared conf, didn't work for sshKey and pullSecret
+		ic := config.PilotLight.InstallConfig
+
+		fmt.Println(ic)
+
+		d, err := yaml.Marshal(&ic)
+		check(err)
+		fmt.Printf("--- ic dump:\n%s\n\n", string(d))
+
+		f, err := os.Create(config.PilotLight.AssetDirectory + "/install-config.yaml")
+		check(err)
+		defer f.Close()
+
+		n2, err := f.Write(d)
+		check(err)
+		fmt.Printf("wrote %d bytes\n", n2)
+	*/
+}
+
+// check does error checking
+func check(e error) {
+	if e != nil {
+		log.Fatalf("error: %v", e)
+	}
+}
+
 // OpenSchedulerYAMLFile opens a YAML file
 func OpenSchedulerYAMLFile(fileName string, fileExt string, filePath string) (SchC SchedulerConfig) {
 	if fileName == "" {
@@ -392,6 +627,67 @@ func OpenSchedulerYAMLFile(fileName string, fileExt string, filePath string) (Sc
 
 	return SchC
 
+}
+
+// Run will run the HTTP Server
+func (config Config) Run() {
+	// Set up a channel to listen to for interrupt signals
+	var runChan = make(chan os.Signal, 1)
+
+	// Set up a context to allow for graceful server shutdowns in the event
+	// of an OS interrupt (defers the cancel just in case)
+	ctx, cancel := context.WithTimeout(
+		context.Background(),
+		config.PilotLight.Server.Timeout.Server,
+	)
+	defer cancel()
+
+	// Create install-config.yaml file
+	WriteInstallConfigFile(config)
+
+	// Define server options
+	server := &http.Server{
+		Addr:         config.PilotLight.Server.Host + ":" + config.PilotLight.Server.Port,
+		Handler:      NewRouter(config.PilotLight.Server.Path),
+		ReadTimeout:  config.PilotLight.Server.Timeout.Read * time.Second,
+		WriteTimeout: config.PilotLight.Server.Timeout.Write * time.Second,
+		IdleTimeout:  config.PilotLight.Server.Timeout.Idle * time.Second,
+	}
+
+	// Only listen on IPV4
+	l, err := net.Listen("tcp4", config.PilotLight.Server.Host+":"+config.PilotLight.Server.Port)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Handle ctrl+c/ctrl+x interrupt
+	signal.Notify(runChan, os.Interrupt, syscall.SIGTSTP)
+
+	// Alert the user that the server is starting
+	log.Printf("Server is starting on %s\n", server.Addr)
+
+	// Run the server on a new goroutine
+	go func() {
+		//if err := server.ListenAndServe(); err != nil {
+		if err := server.Serve(l); err != nil {
+			if err == http.ErrServerClosed {
+				// Normal interrupt operation, ignore
+			} else {
+				log.Fatalf("Server failed to start due to err: %v", err)
+			}
+		}
+	}()
+
+	// Block on this channel listeninf for those previously defined syscalls assign
+	// to variable so we can let the user know why the server is shutting down
+	interrupt := <-runChan
+
+	// If we get one of the pre-prescribed syscalls, gracefully terminate the server
+	// while alerting the user
+	log.Printf("Server is shutting down due to %+v\n", interrupt)
+	if err := server.Shutdown(ctx); err != nil {
+		log.Fatalf("Server was unable to gracefully shutdown due to err: %+v", err)
+	}
 }
 
 // Func main should be as small as possible and do as little as possible by convention

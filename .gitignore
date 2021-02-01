@@ -1,5 +1,7 @@
 pilot-light
 config.yml
 config.yaml
-/config.yml
-/config.yaml
+install-config.yaml
+.generated
+.generated/
+.generated/*

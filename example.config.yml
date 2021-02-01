@@ -1,7 +1,9 @@
 pilot_light:
   version: 0.0.1
 
+  asset_directory: ./.generated/
   dns_server: 8.8.8.8:53
+  install_config_path: ./install-config.yaml
 
   server:
     host: 0.0.0.0
@@ -35,29 +37,3 @@ pilot_light:
       hostname_format: "*worker*"
       #ignition_template: templates/application.tpl.ign
       #ignition_template allows you to set up custom Ignition templates for specific resources.  Vars include: {{ hostname }} and {{ ip }}
-
-  install_config:
-    apiVersion: v1
-    baseDomain: example.com
-    compute:
-    - hyperthreading: Enabled
-      name: worker
-      replicas: 0
-    controlPlane:
-      hyperthreading: Enabled
-      name: master
-      replicas: 3
-    metadata:
-      name: test
-    networking:
-      clusterNetwork:
-      - cidr: 10.128.0.0/14
-        hostPrefix: 23
-      networkType: OpenShiftSDN
-      serviceNetwork:
-      - 172.30.0.0/16
-    platform:
-      none: {}
-    fips: false
-    pullSecret: '{"auths": ...}'
-    sshKey: 'ssh-ed25519 AAAA...'
