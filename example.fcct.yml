@@ -15,6 +15,10 @@ storage:
       contents:
         local: install-config.yaml
       mode: 0644
+    - path: /etc/hostname
+      mode: 0644
+      contents:
+        inline: pilot-light-server
 systemd:
   units:
     - name: pilot-light.service
