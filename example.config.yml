@@ -1,5 +1,5 @@
 pilot_light:
-  version: 0.0.1
+  version: 0.0.5
 
   asset_directory: ./.generated/
   dns_server: 8.8.8.8:53
