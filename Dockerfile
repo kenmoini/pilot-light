@@ -1,4 +1,4 @@
-FROM registry.access.redhat.com/ubi8/go-toolset:1.14.12
+FROM registry.access.redhat.com/ubi8/go-toolset:1.14.12 AS build
 #FROM golang:1.14.3-alpine AS build
 
 WORKDIR /opt/app-root/src
