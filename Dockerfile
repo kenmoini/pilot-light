@@ -3,8 +3,8 @@ FROM registry.access.redhat.com/ubi8/go-toolset:1.14.12
 
 WORKDIR /src
 COPY . .
-RUN go build -o /opt/pilot-light .
+RUN go build
 
 FROM scratch AS bin
 
-COPY --from=build /opt/pilot-light /
+COPY --from=build /src/pilot-light /
