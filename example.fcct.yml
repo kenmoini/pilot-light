@@ -1,0 +1,38 @@
+variant: fcos
+version: 1.2.0
+passwd:
+  users:
+    - name: core
+      ssh_authorized_keys:
+        - ssh-rsa ljhsdafojashdflkasjdf...
+storage:
+  files:
+    - path: /opt/pilot-light/config.yml
+      contents:
+        local: config.yml
+      mode: 0644
+    - path: /opt/pilot-light/install-config.yaml
+      contents:
+        local: install-config.yaml
+      mode: 0644
+systemd:
+  units:
+    - name: pilot-light.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=pilot-light
+        After=network-online.target
+        Wants=network-online.target
+        [Service]
+        TimeoutStartSec=0
+        ExecStartPre=-/bin/podman kill pilot-light
+        ExecStartPre=-/bin/podman rm pilot-light
+        ExecStartPre=/bin/podman pull kenmoini/pilot-light
+        ExecStart=/bin/podman run --name pilot-light \
+         --net=host \
+         --privileged \
+         -v /opt/pilot-light/:/root/:Z \
+        kenmoini/pilot-light -config /root/config.yml
+        [Install]
+        WantedBy=multi-user.target
