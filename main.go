@@ -583,9 +583,9 @@ func PreflightSetup(config Config) {
 
 	// Create ignition files
 	log.Println("Creating ignition configs...")
-	//cmd = exec.Command(absoluteBinPath + "/create_ignition_configs.sh")
-	//err = cmd.Start()
-	//check(err)
+	cmd = exec.Command(absoluteBinPath + "/create_ignition_configs.sh")
+	err = cmd.Start()
+	check(err)
 
 	log.Println("Preflight complete!")
 }
