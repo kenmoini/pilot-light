@@ -44,6 +44,8 @@ type PilotLightYaml struct {
 	InstallConfigPath   string        `yaml:"install_config_path"`
 	MastersSchedulable  bool          `yaml:"masters_schedulable"`
 	DefaultIgnitionFile string        `yaml:"default_ignition_file"`
+	OCPStream           string        `yaml:"ocp_stream"`
+	OCPVersion          string        `yaml:"ocp_version"`
 	Server              Server        `yaml:"server"`
 	Database            Database      `yaml:"database"`
 	IgnitionSets        []IgnitionSet `yaml:"ignition_sets"`
@@ -480,6 +482,22 @@ func ReadUserIPNoPort(r *http.Request) string {
 	return JoinedAddress
 }
 
+func replaceMastersSchedulable(filePath string) {
+	input, err := ioutil.ReadFile(filePath)
+	check(err)
+
+	lines := strings.Split(string(input), "\n")
+
+	for i, line := range lines {
+		if strings.Contains(line, "mastersSchedulable: true") {
+			lines[i] = "  mastersSchedulable: false"
+		}
+	}
+	output := strings.Join(lines, "\n")
+	err = ioutil.WriteFile(filePath, []byte(output), 0644)
+	check(err)
+}
+
 // createDirectory is self explanitory
 func createDirectory(path string) {
 	log.Printf("Creating directory %s\n", path)
@@ -559,14 +577,15 @@ func PreflightSetup(config Config) {
 	// Edit manifest file to disable scheduling workloads on Control Plane nodes
 	if config.PilotLight.MastersSchedulable == false {
 		log.Println("Setting Control Plane to not run workloads...")
-		ModifySchedulerYAMLFile("cluster-scheduler-02-config", "yml", absoluteConfPath+"/manifests/")
+		//ModifySchedulerYAMLFile("cluster-scheduler-02-config", "yml", absoluteConfPath+"/manifests/")
+		replaceMastersSchedulable(absoluteConfPath + "/manifests/cluster-scheduler-02-config.yml")
 	}
 
 	// Create ignition files
 	log.Println("Creating ignition configs...")
-	cmd = exec.Command(absoluteBinPath + "/create_ignition_configs.sh")
-	err = cmd.Start()
-	check(err)
+	//cmd = exec.Command(absoluteBinPath + "/create_ignition_configs.sh")
+	//err = cmd.Start()
+	//check(err)
 
 	log.Println("Preflight complete!")
 }
