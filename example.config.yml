@@ -7,6 +7,9 @@ pilot_light:
   masters_schedulable: false
   default_ignition_file: bootstrap
 
+  ocp_stream: stable
+  ocp_version: latest
+
   server:
     host: 0.0.0.0
     path: "/generate-manifest"
