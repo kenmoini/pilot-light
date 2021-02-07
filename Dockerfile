@@ -7,6 +7,8 @@ RUN go build
 
 FROM scratch AS bin
 
-COPY --from=build /opt/app-root/src/pilot-light /
+COPY --from=build /opt/app-root/src/pilot-light /usr/local/bin/
 
-CMD [ "/pilot-light" ]
+EXPOSE 8082
+
+CMD [ "pilot-light -config /etc/pilot-light/config.yml" ]
