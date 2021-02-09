@@ -5,6 +5,7 @@ pilot_light:
   dns_server: 8.8.8.8:53
   install_config_path: ./install-config.yaml
   masters_schedulable: false
+  asset_server: true
   default_ignition_file: bootstrap
 
   ocp_stream: stable
@@ -12,7 +13,7 @@ pilot_light:
 
   server:
     host: 0.0.0.0
-    path: "/generate-manifest"
+    ignition_path: "/generate-manifest"
     port: 8082
     timeout:
       server: 30

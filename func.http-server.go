@@ -30,6 +30,10 @@ func NewRouter(generationPath string) *http.ServeMux {
 		fmt.Fprintf(w, "OK")
 	})
 
+	router.HandleFunc("/assets/", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "OK")
+	})
+
 	router.HandleFunc(generationPath, func(w http.ResponseWriter, r *http.Request) {
 		clientIPAddress := ReadUserIPNoPort(r)
 		address, err := NslookupIP(clientIPAddress)
@@ -93,9 +97,7 @@ func (config Config) RunHTTPServer() {
 
 	// Only listen on IPV4
 	l, err := net.Listen("tcp4", config.PilotLight.Server.Host+":"+config.PilotLight.Server.Port)
-	if err != nil {
-		log.Fatal(err)
-	}
+	check(err)
 
 	// Handle ctrl+c/ctrl+x interrupt
 	signal.Notify(runChan, os.Interrupt, syscall.SIGTSTP)

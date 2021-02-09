@@ -14,6 +14,7 @@ type PilotLightYaml struct {
 	DNSServer           string        `yaml:"dns_server"`
 	InstallConfigPath   string        `yaml:"install_config_path"`
 	MastersSchedulable  bool          `yaml:"masters_schedulable"`
+	AssetServer         bool          `yaml:"asset_server"`
 	DefaultIgnitionFile string        `yaml:"default_ignition_file"`
 	OCPStream           string        `yaml:"ocp_stream"`
 	OCPVersion          string        `yaml:"ocp_version"`
@@ -28,7 +29,7 @@ type Server struct {
 	// Host is the local machine IP Address to bind the HTTP Server to
 	Host string `yaml:"host"`
 
-	Path string `yaml:"path"`
+	Path string `yaml:"ignition_path"`
 
 	// Port is the local machine TCP Port to bind the HTTP Server to
 	Port    string `yaml:"port"`

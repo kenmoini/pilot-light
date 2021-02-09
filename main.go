@@ -66,6 +66,8 @@ func PreflightSetup(config Config) {
 	check(err)
 	absoluteConfPath, err := filepath.Abs(config.PilotLight.AssetDirectory + "/conf/")
 	check(err)
+	absoluteWWWRootPath, err := filepath.Abs(config.PilotLight.AssetDirectory + "/www-root/")
+	check(err)
 
 	// Create generation directory
 	CreateDirectory(config.PilotLight.AssetDirectory)
@@ -75,6 +77,9 @@ func PreflightSetup(config Config) {
 
 	// Create conf directory
 	CreateDirectory(absoluteConfPath)
+
+	// Create www-root directory
+	CreateDirectory(absoluteWWWRootPath)
 
 	// Copy over the install-config.yml file
 	CopyFile(config.PilotLight.InstallConfigPath, absoluteConfPath+"/install-config.yaml", BUFFERSIZE)
